@@ -10,7 +10,7 @@ var ExampleApplication = React.createClass({
 	  var message =
 	    'React has been successfully running for ' + seconds + ' seconds.';
 	
-	  return `<h1>{message}</h1>`;
+		return React.DOM.p(null, message);
 	}
 });
 
@@ -24,8 +24,9 @@ setInterval(function() {
 	);
 }, 50);
 ```
-在这里我们可以看到用户API的两个主要方法
+在这里我们可以看到用户API的三个React相关的API
 
+* React.DOM
 * React.createClass
 * React.renderComponent
 
@@ -87,7 +88,7 @@ var React = {
   isValidComponent: ReactComponent.isValidComponent
 };
 ```
-在导出代码中我们不难发现在开始我们提取出的两个重要方法，现在我们从第一个方法开始看
+在导出代码中我们不难发现在开始我们提取出的三个重要方法，现在我们略过ReactDom从第二个方法开始看
 
 #### React.createClass
 我们转到 ReactCompositeComponent.createClass 看一下
@@ -151,7 +152,7 @@ ReactCompositeComponentBase混合了四个东西，打开ReactComponent.Mixin，
 
 Mixin中的方法太多我们不用太关心，不影响我们理解框架核心思想，继续往后看到ReactCompositeComponentMixin，我们会发现这里的方法比较眼熟，这里也有construct, mountComponent, unmountComponent，大概明白了这里继承（覆盖）了ReactComponent.Mixin中的一些方法，那instance里的construct应该是这里的construct没错了，construct的作用大概想想都知道是初始化了就不多说了，有兴趣可以自主查看一下construct的实现，里面有备注也比较好理解
 
-那到这里，craeteClass的原理我们清楚了，就是创建一个React组件（ConvenienceConstructor类），中间混合了很多方法，然后ConvenienceConstructor实例化会执行construct方法，construct方法里做了什么后续我会完善，记个todo#1
+那到这里，craeteClass的原理我们清楚了，就是创建一个React组件（ReactCompositeComponentBase类），中间混合了很多方法，然后ReactCompositeComponentBase实例化会执行construct方法，construct方法里做了什么后续我会完善，记个todo#1
 
 #### React.renderComponent
 顾名思义，渲染组件，我们来看一下他的内部实现
@@ -204,10 +205,140 @@ renderComponent: function(nextComponent, container) {
 //具体作用后续更新#2
 ReactMount.prepareTopLevelEvents(ReactEventTopLevelCallback);
 
+//注册container id，然后将组件挂在到container上
 var reactRootID = ReactMount.registerContainer(container);
 instanceByReactRootID[reactRootID] = nextComponent;
 nextComponent.mountComponentIntoNode(reactRootID, container);
 return nextComponent;
 ```
+
+我们进入到mountComponentIntoNode
+
+```
+mountComponentIntoNode: function(rootID, container) {
+	var transaction = ReactComponent.ReactReconcileTransaction.getPooled();
+	transaction.perform(
+		this._mountComponentIntoNode,
+		this,
+		rootID,
+		container,
+		transaction
+	);
+	ReactComponent.ReactReconcileTransaction.release(transaction);
+},
+```
+再进入到关键方法_mountComponentIntoNode
+
+```
+_mountComponentIntoNode: function(rootID, container, transaction) {
+	var renderStart = Date.now();
+	var markup = this.mountComponent(rootID, transaction);
+	ReactMount.totalInstantiationTime += (Date.now() - renderStart);
+
+	var injectionStart = Date.now();
+	// Asynchronously inject markup by ensuring that the container is not in
+	// the document when settings its `innerHTML`.
+	var parent = container.parentNode;
+	if (parent) {
+		var next = container.nextSibling;
+		parent.removeChild(container);
+		container.innerHTML = markup;
+		if (next) {
+			parent.insertBefore(container, next);
+		} else {
+			parent.appendChild(container);
+		}
+	} else {
+		container.innerHTML = markup;
+	}
+ReactMount.totalInjectionTime += (Date.now() - injectionStart);
+}
+```
+
+这里分为两个步骤
+
+1. 通过mountComponent方法获取markup（解析后的dom元素）
+2. 将markup注入到container（页面渲染）
+
+我们首先转到ReactCompositeComponentMixin的mountComponent看一下具体实现
+
+```
+mountComponent: function(rootID, transaction) {
+	ReactComponent.Mixin.mountComponent.call(this, rootID, transaction);
+
+	// Unset `this._lifeCycleState` until after this method is finished.
+	this._lifeCycleState = ReactComponent.LifeCycle.UNMOUNTED;
+	this._compositeLifeCycleState = CompositeLifeCycle.MOUNTING;
+
+	if (this.constructor.propDeclarations) {
+		this._assertValidProps(this.props);
+	}
+
+	if (this.__reactAutoBindMap) {
+		this._bindAutoBindMethods();
+	}
+
+	this.state = this.getInitialState ? this.getInitialState() : null;
+	this._pendingState = null;
+
+	if (this.componentWillMount) {
+		this.componentWillMount();
+		// When mounting, calls to `setState` by `componentWillMount` will set
+		// `this._pendingState` without triggering a re-render.
+		if (this._pendingState) {
+			this.state = this._pendingState;
+		this._pendingState = null;
+		}
+	}
+
+	if (this.componentDidMount) {
+		transaction.getReactOnDOMReady().enqueue(this, this.componentDidMount);
+	}
+
+	this._renderedComponent = this._renderValidatedComponent();
+
+	// Done with mounting, `setState` will now trigger UI changes.
+	this._compositeLifeCycleState = null;
+	this._lifeCycleState = ReactComponent.LifeCycle.MOUNTED;
+
+	return this._renderedComponent.mountComponent(rootID, transaction);
+}
+```
+这个方法是渲染过程的核心方法，在这里我们看到了两个lifecycle hook和一个渲染方法:
+
+1. componentWillMount
+2. componentDidMount
+3. _renderValidatedComponent 
+4. this._renderValidatedComponent.mountComponent
+
+生命周期方法就不多讲了，做你想做的就行，我们主要看一下_renderValidatedComponent
+
+```
+_renderValidatedComponent: function() {
+	ReactCurrentOwner.current = this;
+	
+	//这里执行了render方法
+	var renderedComponent = this.render();
+	ReactCurrentOwner.current = null;
+	
+	//验证render方法中return的内容是否符合React组件标注
+	invariant(
+		ReactComponent.isValidComponent(renderedComponent),
+		'%s.render(): A valid ReactComponent must be returned.',
+		this.constructor.displayName || 'ReactCompositeComponent'
+	);
+	
+	return renderedComponent;
+},
+```
+这里很简单，执行render方法，拿到React.DOM（最后再讲解）生成的实例，验证是否是一个ReactDom，最后返回rendererComponent
+
+接下来就是this._renderedComponent.mountComponent(rootID, transaction)，现在问题又来了
+
+1. mountComponent在哪里
+2. this._renderedComponent真正的又是什么，打开React.DOM
+
+#### React.DOM
+
 
 #1 construct
