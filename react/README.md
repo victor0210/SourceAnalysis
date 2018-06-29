@@ -5,11 +5,10 @@
 //创建一个React组件
 var ExampleApplication = React.createClass({
 	render: function() {
-	  var elapsed = Math.round(this.props.elapsed  / 100);
-	  var seconds = elapsed / 10 + (elapsed % 10 ? '' : '.0' );
-	  var message =
-	    'React has been successfully running for ' + seconds + ' seconds.';
-	
+		var elapsed = Math.round(this.props.elapsed  / 100);
+		var seconds = elapsed / 10 + (elapsed % 10 ? '' : '.0' );
+		var message = 'React has been successfully running for ' + seconds + ' seconds.';
+			
 		return React.DOM.p(null, message);
 	}
 });
@@ -19,8 +18,8 @@ var start = new Date().getTime();
 setInterval(function() {
 	//将React组件渲染成真正的dom元素
 	React.renderComponent(
-	  <ExampleApplication elapsed={new Date().getTime() - start} />,
-	  document.getElementById('container')
+		<ExampleApplication elapsed={new Date().getTime() - start} />,
+		document.getElementById('container')
 	);
 }, 50);
 ```
@@ -50,13 +49,13 @@ ReactDefaultInjection.inject();
 注入包括
 
 ```
-//用于解决DOM层次结构和插件顺序的注入模块
+//用于解决DOM层次结构和插件顺序的注入模块：后续详讲
 EventPluginHub.injection.injectEventPluginOrder(DefaultEventPluginOrder);
 EventPluginHub.injection.injectInstanceHandle(ReactInstanceHandles);
 ```
 
 ```
-//默认注入的两个重要模块
+//默认注入的两个重要模块：后续详讲
 EventPluginHub.injection.injectEventPluginsByName({
 	'SimpleEventPlugin': SimpleEventPlugin,
 	'EnterLeaveEventPlugin': EnterLeaveEventPlugin
@@ -88,7 +87,7 @@ var React = {
   isValidComponent: ReactComponent.isValidComponent
 };
 ```
-在导出代码中我们不难发现在开始我们提取出的三个重要方法，现在我们略过ReactDom从第二个方法开始看
+在导出代码中我们不难发现在开始我们提取出的三个重要方法，现在我们略过ReactDOM从第二个关键方法开始看
 
 #### React.createClass
 我们转到 ReactCompositeComponent.createClass 看一下
@@ -251,7 +250,7 @@ _mountComponentIntoNode: function(rootID, container, transaction) {
 	} else {
 		container.innerHTML = markup;
 	}
-ReactMount.totalInjectionTime += (Date.now() - injectionStart);
+	ReactMount.totalInjectionTime += (Date.now() - injectionStart);
 }
 ```
 
@@ -335,10 +334,62 @@ _renderValidatedComponent: function() {
 
 接下来就是this._renderedComponent.mountComponent(rootID, transaction)，现在问题又来了
 
-1. mountComponent在哪里
-2. this._renderedComponent真正的又是什么，打开React.DOM
+1. this._renderedComponent真正的又是什么，打开React.DOM
+2. mountComponent是什么？在哪里
 
 #### React.DOM
 
+```
+/**
+ * Creates a mapping from supported HTML tags to `ReactNativeComponent` classes.
+ * This is also accessible via `React.DOM`.
+ //创建一个html标签到ReactNativeComponent的映射，通过React.DOM去访问
+ * @public
+ */
+var ReactDOM = objMapKeyVal({
+	a: false,
+	abbr: false,
+	address: false,
+	...
+}, createDOMComponentClass)
+```
 
-#1 construct
+createDOMcomponentClass：
+
+```
+function createDOMComponentClass(tag, omitClose) {
+	var Constructor = function() {};
+
+	Constructor.prototype = new ReactNativeComponent(tag, omitClose);
+	Constructor.prototype.constructor = Constructor;
+
+	return function(props, children) {
+		var instance = new Constructor();
+		instance.construct.apply(instance, arguments);
+		return instance;
+	};
+}
+```
+
+这个方法的主要意思就是返回一个ReactNativeComponent对象，初始化的时候执行construct方法。
+ReactDOM主要结合objMapKeyVal方法返回不同标签对应的ReactNativeComponent对象集，现在又一个重点来了，看一下ReactNativeComponent的内部实现
+代码太多这里就只粘核心代码了
+ReactNativeComponent初始化时执行了以下代码很好理解,就是根据传入的标签做一些初始化
+
+```
+function ReactNativeComponent(tag, omitClose) {
+	this._tagOpen = '<' + tag + ' ';
+	this._tagClose = omitClose ? '' : '</' + tag + '>';
+	this.tagName = tag.toUpperCase();
+}
+```
+
+然后转到下面看到Mixin，里面又看到了一些熟悉的方法，construct，mountComponent等。并在底部进行了mixinInto ReactComponent的操作，所以现在回过头来看我们之前提的两个问题就已经找到答案了
+
+1. this._renderedComponent真正的又是什么：ReactNativeComponent的一个实例
+2. mountComponent是什么？在哪里：ReactNativeComponent的Mixin中，做了一些createMarkup的操作，并将生成的markup返回
+
+最后再回到_mountComponentIntoNode中，markup是什么，怎么拿到的我们都已经知道了，后续的代码是实际修改dom的代码，也比较简单好理解了，那到这里，整个首次render过程我们就很清楚了，下一张会继续讲到react的update过程
+
+
+
